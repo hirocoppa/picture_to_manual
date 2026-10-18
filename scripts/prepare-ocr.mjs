@@ -9,11 +9,11 @@ const core = path.dirname(require.resolve('tesseract.js-core'));
 for (const name of await readdir(core)) {
   if (name.endsWith('.wasm.js') || name.endsWith('.wasm')) await copyFile(path.join(core, name), new URL(name, target));
 }
-for (const language of ['jpn', 'eng']) {
+for (const language of ['jpn', 'eng', 'jpn_vert']) {
   const base = path.dirname(require.resolve(`@tesseract.js-data/${language}/package.json`));
   await copyFile(path.join(base, '4.0.0_best_int', `${language}.traineddata.gz`), new URL(`${language}.traineddata.gz`, target));
 }
-console.log('Local OCR worker, WASM and Japanese/English models prepared.');
+console.log('Local OCR worker, WASM and vertical/horizontal Japanese + English models prepared.');
 const aiTarget = new URL('../public/ai/', import.meta.url);
 await mkdir(aiTarget, { recursive: true });
 const ort = path.dirname(require.resolve('onnxruntime-web'));

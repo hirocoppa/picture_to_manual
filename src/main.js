@@ -1,188 +1,165 @@
 import './style.css';
-import { appendImages, appendSummary } from './pdf.js';
+import { appendSummary } from './pdf.js';
 import { store } from './storage.js';
 import { recognizePhotos } from './ocr.js';
-import { summarizeWithAI, stopAI } from './ai.js';
+import { summarizeWithAI } from './ai.js';
+import { readPhoto } from './image.js';
 
-let documents = [], active = null, pending = [], busy = false;
-let draftWrites = Promise.resolve();
-let cancelAI;
-let fontPromise;
-async function japaneseFont() {
-  if (!fontPromise) fontPromise = fetch(new URL(`${import.meta.env.BASE_URL}fonts/NotoSansJP-Regular.ttf`, location.href)).then(r => { if (!r.ok) throw new Error('日本語フォントを取得できません'); return r.arrayBuffer(); }).catch(error => { fontPromise = null; throw error; });
-  return fontPromise;
-}
+let documents = [], active = null, pending = [], source = '', summary = '';
+let busy = true, paused = false, phase = '', controller, draftWrites = Promise.resolve(), fontPromise;
 const app = document.querySelector('#app');
 app.innerHTML = `
-<header><a class="brand" href="./"><span class="logo">▧</span> Picture to Manual</a><span class="local">この端末に保存</span></header>
-<main><section class="intro"><div class="eyebrow">YOUR PHOTOS, ONE MANUAL</div><h1>写真の文字を、<br>わかりやすい要約に。</h1><p>文字を読み取り、無料の端末内AIで要点を整理。<br class="desktop">内容を確認して、読みやすいPDFにまとめます。</p></section>
-<div class="workspace"><aside><div class="section-heading"><h2>マイマニュアル</h2><button id="new" class="icon" aria-label="新しいマニュアル">＋</button></div><div id="documents"></div><p class="privacy">写真とPDFはサーバーに送信されません。<br>このブラウザ内に保存されます。</p></aside>
-<section class="editor"><div class="section-heading"><span class="eyebrow">MANUAL EDITOR</span><span id="badge">新規作成</span></div><label for="title">マニュアル名</label><input id="title" maxlength="100" placeholder="例：コーヒーマシンの使い方" value="新しいマニュアル"><div id="existing"></div>
-<label class="drop" for="photos"><span class="photo-icon">＋</span><strong>写真を読み込む</strong><span>複数の写真をまとめて追加できます</span><span class="format">JPEG・PNG・WebP など、端末で読み込める画像</span></label><input type="file" id="photos" accept="image/*" multiple hidden><div id="queue"></div>
-<fieldset class="output-mode"><legend>PDFの内容</legend><label><input type="radio" name="mode" value="summary" checked> 文字を要約してPDF</label><label><input type="radio" name="mode" value="photos"> 写真をそのままPDF</label></fieldset>
-<section id="text-editor"><div class="section-heading"><h2>文字を読み取り・要約</h2><button id="read-text" class="secondary">写真の文字を読み取る</button></div>
-<label for="source-text">読み取った文字（修正できます）</label><textarea id="source-text" rows="6" placeholder="写真から読み取るか、文章をここに入力してください。"></textarea>
-<p class="hint">文字の読み間違いはここで修正してください。初回は文字認識データを取得します。写真・文章は外部に送信しません。</p>
-<button id="summarize" class="secondary">無料のAIで要約する</button><button id="cancel-ai" class="secondary" hidden>AI処理を中止</button>
-<p class="hint">AIモデルの初回取得に数百MB程度の通信と、端末の空きメモリが必要です。Wi-Fiでの利用をおすすめします。機種によっては動作しません。API料金はかかりません。</p>
-<label for="summary-text">要約（PDFに入る内容・修正できます）</label><textarea id="summary-text" rows="7" placeholder="AIの要約を確認・修正してからPDFにしてください。"></textarea><p class="hint">AIの要約には誤りや情報の抜けがあり得ます。特に数値・手順・注意点を元の写真と照合してください。</p></section>
-<p id="status" role="status" aria-live="polite"></p><div class="actions"><button id="save" class="primary">PDFを作成</button><button id="download" class="secondary" disabled>PDFを保存・共有</button></div><p class="hint">要約はA4縦のPDFに整えます。更新時は既存ページを残して末尾に追加します。</p></section></div>
-<section class="steps"><div><b>01</b><span>写真を選ぶ</span></div><div><b>02</b><span>文字を読み取り・AIで要約</span></div><div><b>03</b><span>確認してPDFに保存</span></div></section><footer>Picture to Manual <span>日々の手順を、写真で残そう。</span></footer></main>`;
+<header><a class="brand" href="./"><span class="logo">▧</span> Picture to Manual</a><span class="local">無料・端末内で処理</span></header>
+<main>
+<section class="intro"><div class="eyebrow">PHOTO → SUMMARY → PDF</div><h1>写真を選ぶだけ。<br>要点をまとめたPDFに。</h1><p>縦書き・横書きの文字を読み取り、<br>AIで要約して自動でPDFを作ります。</p></section>
+<section class="editor" aria-label="PDFを作る">
+<div class="section-heading"><h2 id="editor-heading">新しいPDF</h2><span id="badge">新規作成</span></div>
+<label for="title">PDFの名前</label><input id="title" maxlength="100" value="新しいマニュアル" placeholder="例：読書メモ">
+<p id="existing"></p>
+<label class="drop" id="photo-picker" for="photos" tabindex="0" role="button"><span class="photo-icon">＋</span><strong id="picker-label">写真を選んでPDFを作る</strong><span>複数の写真をまとめて選べます</span></label>
+<input type="file" id="photos" accept="image/*" multiple hidden>
+<div id="progress" hidden><ol><li data-phase="ocr">文字を読み取り</li><li data-phase="ai">AIで要約</li><li data-phase="pdf">PDFを作成</li></ol></div>
+<p id="status" role="status" aria-live="polite"></p>
+<div class="actions"><button id="retry" class="secondary" hidden>もう一度作成する</button><button id="cancel" class="secondary" hidden>中止する</button><button id="download" class="primary" hidden>PDFを保存・共有</button></div>
+<div id="preview" hidden><h3>最後にまとめた内容</h3><p id="summary-preview"></p></div>
+<p class="hint">写真・文章は外部に送信しません。要約には誤りや情報の抜けがあり得ます。</p>
+<details><summary>初めて使うとき・文字が読めないとき</summary><p>初回はAIモデル（約512MB）を取得します。Wi-Fiをご利用ください。端末によってはメモリ不足で動作しません。</p><p>縦書きの日本語に対応しています。文字が小さい・ぼけている・斜めの写真は、文字を大きく、明るい場所で正面から撮ると読み取りやすくなります。手書きや複雑な紙面では認識できない場合があります。</p><p>大切なPDFは「ファイル」に保存してください。ブラウザのデータが削除されると端末内の内容も失われます。</p></details>
+</section>
+<section class="library"><div class="section-heading"><h2>保存したPDF</h2><button id="new" class="secondary">新しいPDF</button></div><div id="documents"></div></section>
+<footer>Picture to Manual</footer>
+</main>`;
 const $ = id => document.getElementById(id);
-function mode() { return document.querySelector('input[name="mode"]:checked').value; }
-function confirmTextChange() { return !($('source-text').value || $('summary-text').value) || confirm('写真を変更すると、読み取り済みの文章と要約がクリアされます。変更しますか？'); }
-function invalidateText() { $('source-text').value = ''; $('summary-text').value = ''; }
-function selectedPhotos() { return pending.filter(p => p.selected !== false); }
-function textState() { return { mode: mode(), source: $('source-text').value, summary: $('summary-text').value }; }
-function resetText() { invalidateText(); document.querySelector('input[value="summary"]').checked = true; }
-
 function message(text) { $('status').textContent = text; }
-function release() { pending.forEach(p => URL.revokeObjectURL(p.url)); pending = []; }
 function render() {
+  $('title').disabled = busy; $('photos').disabled = busy; $('new').disabled = busy;
+  $('photo-picker').classList.toggle('disabled', busy);
+  $('photo-picker').setAttribute('aria-disabled', String(busy));
+  $('photo-picker').tabIndex = busy ? -1 : 0;
+  $('picker-label').textContent = paused && pending.length ? '写真を選び直す' : active ? '写真を追加してPDFを更新' : '写真を選んでPDFを作る';
+  $('badge').textContent = active ? `${active.count}ページ保存済み` : '新規作成';
+  $('existing').textContent = active ? `今の${active.count}ページを残して、新しい要約を末尾に追加します。` : '';
+  $('editor-heading').textContent = active ? 'PDFに追加' : '新しいPDF';
+  $('retry').hidden = busy || !(pending.length || source || summary);
+  $('cancel').hidden = !busy || !controller || phase === 'saving';
+  $('download').hidden = busy || !active;
+  $('progress').hidden = !busy || !phase;
+  $('progress').setAttribute('aria-busy', String(busy));
+  const order = ['ocr', 'ai', 'pdf', 'saving'];
+  document.querySelectorAll('[data-phase]').forEach(el => {
+    el.classList.toggle('current', el.dataset.phase === phase || (phase === 'saving' && el.dataset.phase === 'pdf'));
+    el.classList.toggle('complete', order.indexOf(el.dataset.phase) < order.indexOf(phase));
+  });
+  $('preview').hidden = !active?.lastSummary;
+  $('summary-preview').textContent = active?.lastSummary || '';
   $('documents').replaceChildren();
-  if (!documents.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'まだマニュアルがありません。最初の1冊を作りましょう。'; $('documents').append(p); }
+  if (!documents.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = '作成したPDFがここに並びます。'; $('documents').append(p); }
   for (const doc of documents) {
-    const button = document.createElement('button'); button.className = 'document' + (active?.id === doc.id ? ' selected' : '');
+    const button = document.createElement('button'); button.className = 'document' + (active?.id === doc.id ? ' selected' : ''); button.disabled = busy;
     const name = document.createElement('strong'); name.textContent = doc.title;
     const detail = document.createElement('span'); detail.textContent = `${doc.count}ページ · ${new Date(doc.updated).toLocaleDateString('ja-JP')}`;
-    button.append(name, detail); button.onclick = () => select(doc); button.disabled = busy; $('documents').append(button);
+    button.append(name, detail); button.onclick = () => select(doc); $('documents').append(button);
   }
-  $('badge').textContent = active ? `${active.count}ページ保存済み` : '新規作成';
-  $('existing').textContent = active ? `✓ 既存の${active.count}ページを維持して、新しい内容を末尾に追加します。` : '';
-  $('queue').replaceChildren();
-  pending.forEach((photo, index) => {
-    const card = document.createElement('div'); card.className = 'thumbnail';
-    const img = document.createElement('img'); img.src = photo.url; img.alt = photo.name;
-    const label = document.createElement('span'); label.textContent = `${index + 1}. ${photo.name}`;
-    const remove = document.createElement('button'); remove.textContent = '×'; remove.setAttribute('aria-label', `${photo.name}を取り消す`); remove.disabled = busy;
-    remove.onclick = () => { if (!confirmTextChange()) return; URL.revokeObjectURL(photo.url); pending.splice(index, 1); invalidateText(); persistDraft(); render(); };
-    const controls = document.createElement('div'); controls.className = 'photo-controls';
-    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = photo.selected !== false; check.disabled = busy; check.setAttribute('aria-label', `${photo.name}をPDFに含める`);
-    check.onchange = () => { if (!confirmTextChange()) { check.checked = photo.selected !== false; return; } photo.selected = check.checked; invalidateText(); persistDraft(); render(); };
-    for (const [text, offset] of [['←', -1], ['→', 1]]) {
-      const move = document.createElement('button'); move.textContent = text; move.disabled = busy || index + offset < 0 || index + offset >= pending.length; move.setAttribute('aria-label', offset < 0 ? '前へ移動' : '後ろへ移動');
-      move.onclick = () => { if (!confirmTextChange()) return; [pending[index], pending[index + offset]] = [pending[index + offset], pending[index]]; invalidateText(); persistDraft(); render(); }; controls.append(move);
+}
+function saveDraft() {
+  const draft = { id: '__draft__', version: 2, activeId: active?.id || null, title: $('title').value, pending, source, summary, paused };
+  draftWrites = draftWrites.catch(() => {}).then(() => store('readwrite', s => s.put(draft)));
+  return draftWrites;
+}
+function select(doc) {
+  if (busy) return;
+  if ((pending.length || source || summary) && !confirm('中断している作業を取り消して切り替えますか？')) return;
+  active = doc; pending = []; source = summary = ''; paused = false; $('title').value = doc?.title || '新しいマニュアル';
+  message(''); render(); saveDraft().catch(() => message('作業状態を保存できませんでした。端末の空き容量を確認してください。'));
+}
+async function japaneseFont(signal) {
+  if (!fontPromise) fontPromise = fetch(new URL(`${import.meta.env.BASE_URL}fonts/NotoSansJP-Regular.ttf`, location.href))
+    .then(r => { if (!r.ok) throw new Error('PDF用フォントを取得できませんでした。通信を確認してください。'); return r.arrayBuffer(); })
+    .catch(error => { fontPromise = null; throw error; });
+  const bytes = await fontPromise; signal.throwIfAborted(); return bytes;
+}
+function setPhase(value, text) { phase = value; message(text); render(); }
+async function runPipeline() {
+  if (busy || !(pending.length || source || summary)) return;
+  busy = true; paused = false; controller = new AbortController(); const signal = controller.signal;
+  try {
+    await saveDraft(); signal.throwIfAborted();
+    if (!source && !summary) {
+      setPhase('ocr', '文字の読み取りを準備しています…');
+      const result = await recognizePhotos(pending, message, signal); signal.throwIfAborted();
+      if (result.unreadable.length || !result.text) {
+        const list = result.unreadable.length ? result.unreadable.join('・') : 'すべて';
+        throw new Error(`写真${list}の文字を十分に読み取れませんでした。明るい場所で文字を大きく、正面から撮った写真を選び直してください。PDFは変更していません。`);
+      }
+      source = result.text; await saveDraft(); signal.throwIfAborted();
     }
-    controls.prepend(check); card.append(img, label, remove, controls); $('queue').append(card);
-  });
-  $('save').textContent = busy ? '処理中…' : active ? '内容を追加してPDFを更新' : 'PDFを作成';
-  $('save').disabled = busy || (mode() === 'summary' ? !$('summary-text').value.trim() : !selectedPhotos().length); $('download').disabled = busy || !active;
-  $('text-editor').hidden = mode() !== 'summary';
-  $('read-text').disabled = busy || !selectedPhotos().length;
-  $('summarize').disabled = busy || !$('source-text').value.trim();
-  document.querySelectorAll('input[name="mode"]').forEach(input => input.disabled = busy);
-  for (const id of ['new', 'photos', 'title', 'source-text', 'summary-text']) $(id).disabled = busy;
-}
-function select(doc) { if (busy) return; if ((pending.length || $('source-text').value || $('summary-text').value) && !confirm('作成中の写真・文章・要約を取り消して切り替えますか？')) return; release(); resetText(); active = doc; $('title').value = doc?.title || '新しいマニュアル'; message(''); persistDraft(); render(); }
-$('new').onclick = () => select(null);
-$('photos').onchange = async event => {
-  const files = [...event.target.files]; event.target.value = ''; if (!files.length) return;
-  if (!confirmTextChange()) return;
-  busy = true; render(); message('写真を読み込んでいます…');
-  let rejected = 0;
-  for (const file of files) {
-    try {
-      if (file.size > 40 * 1024 * 1024) throw new Error('写真が大きすぎます');
-      const bytes = await jpeg(file);
-      invalidateText();
-      pending.push({ bytes, name: file.name, selected: true, url: URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' })) });
-    } catch { rejected++; }
-  }
-  const persisted = await persistDraft(); busy = false; if (persisted) message(rejected ? `${rejected}枚は読み込めませんでした。JPEGまたはPNGに変換するか、40MB以下の写真を選んでください。` : `${pending.length}枚の写真を追加できます。`); render();
-};
-async function jpeg(file) {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = new Image(); img.src = url; await img.decode();
-    const ratio = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
-    const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(img.naturalWidth * ratio)); canvas.height = Math.max(1, Math.round(img.naturalHeight * ratio));
-    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
-    if (!blob) throw new Error('画像変換失敗'); return new Uint8Array(await blob.arrayBuffer());
-  } finally { URL.revokeObjectURL(url); }
-}
-$('save').onclick = async () => {
-  if (busy || (mode() === 'summary' ? !$('summary-text').value.trim() : !selectedPhotos().length)) return; busy = true; render(); message('PDFを保存しています…');
-  try {
-    const result = mode() === 'summary'
-      ? await appendSummary(active?.bytes, { title: $('title').value.trim() || '要約マニュアル', summary: $('summary-text').value }, await japaneseFont())
-      : await appendImages(active?.bytes, selectedPhotos().map(p => p.bytes));
-    const doc = { id: active?.id || crypto.randomUUID(), title: $('title').value.trim() || '新しいマニュアル', bytes: result.bytes, count: result.count, updated: Date.now() };
+    if (!summary) {
+      setPhase('ai', 'AIで要約しています。初回のモデル取得には時間がかかります…');
+      summary = await summarizeWithAI(source, message, signal); signal.throwIfAborted();
+      if (!summary.trim()) throw new Error('要約を作成できませんでした。もう一度お試しください。');
+      await saveDraft(); signal.throwIfAborted();
+    }
+    setPhase('pdf', '要約したPDFを作成しています…');
+    const title = $('title').value.trim() || '新しいマニュアル';
+    const result = await appendSummary(active?.bytes, { title, summary }, await japaneseFont(signal)); signal.throwIfAborted();
+    const doc = { id: active?.id || crypto.randomUUID(), title, bytes: result.bytes, count: result.count, lastSummary: summary, updated: Date.now() };
+    setPhase('saving', 'PDFを端末に保存しています…');
     await draftWrites;
     await store('readwrite', s => {
       s.put(doc);
-      return s.put({ id: '__draft__', activeId: doc.id, title: doc.title, pending: [], text: { mode: mode(), source: '', summary: '' } });
+      return s.put({ id: '__draft__', version: 2, activeId: doc.id, title, pending: [], source: '', summary: '', paused: false });
     });
-    active = doc; documents = [doc, ...documents.filter(d => d.id !== doc.id)]; release(); invalidateText(); message(`${doc.count}ページのPDFを保存しました。`);
-  } catch (error) { console.error(error); message('保存できませんでした。端末の空き容量を確認して再試行してください。作業内容はそのまま残っています。'); }
-  finally { busy = false; render(); }
+    active = doc; documents = [doc, ...documents.filter(d => d.id !== doc.id)]; pending = []; source = summary = ''; $('title').value = title;
+    message(`完成しました。${doc.count}ページのPDFを保存・共有できます。`);
+  } catch (error) {
+    console.error(error); paused = true;
+    const text = error.name === 'AbortError' ? '処理を中止しました。「もう一度作成する」で再開できます。'
+      : error.name === 'QuotaExceededError' ? '保存容量が足りません。空き容量を確保して、もう一度作成してください。以前のPDFは残っています。'
+      : error.message || '作成できませんでした。通信と端末の空き容量を確認してください。';
+    try { await saveDraft(); } catch { /* Preserve the working state in memory. */ }
+    message(text);
+  } finally { busy = false; controller = null; phase = ''; render(); }
+}
+$('photos').onchange = async event => {
+  const files = [...event.target.files]; event.target.value = ''; if (!files.length || busy) return;
+  busy = true; message('写真を読み込んでいます…'); render();
+  try {
+    const imported = [];
+    for (const file of files) imported.push(await readPhoto(file));
+    pending = imported; source = summary = ''; paused = false;
+    await saveDraft(); busy = false; await runPipeline();
+  } catch (error) {
+    paused = true; busy = false; message(error.name === 'QuotaExceededError' ? '写真を保存できませんでした。端末の空き容量を確認してください。' : '写真を読み込めませんでした。40MB以下のJPEG・PNGなどを選んでください。'); render();
+  }
 };
+$('photo-picker').onkeydown = event => { if (!busy && ['Enter', ' '].includes(event.key)) { event.preventDefault(); $('photos').click(); } };
+$('cancel').onclick = () => { if (phase !== 'saving') controller?.abort(); };
+$('retry').onclick = runPipeline;
+$('new').onclick = () => select(null);
+$('title').oninput = () => saveDraft().catch(() => message('名前を保存できませんでした。端末の空き容量を確認してください。'));
 $('download').onclick = async () => {
-  if (!active) return;
-  const name = active.title.replace(/[\\/:*?"<>|]/g, '_') + '.pdf';
-  const file = new File([active.bytes], name, { type: 'application/pdf' });
+  if (!active || busy) return;
+  const file = new File([active.bytes], active.title.replace(/[\\/:*?"<>|]/g, '_') + '.pdf', { type: 'application/pdf' });
   try {
     if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title: active.title });
-    else { const url = URL.createObjectURL(file); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+    else { const url = URL.createObjectURL(file); const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
   } catch (error) { if (error.name !== 'AbortError') message('共有できませんでした。もう一度お試しください。'); }
 };
-window.addEventListener('beforeunload', event => { if (pending.length || busy) { event.preventDefault(); event.returnValue = ''; } });
-function persistDraft() {
-  const draft = { id: '__draft__', activeId: active?.id || null, title: $('title').value, text: textState(), pending: pending.map(({ bytes, name, selected }) => ({ bytes, name, selected })) };
-  draftWrites = draftWrites.catch(() => {}).then(() => store('readwrite', s => s.put(draft))).then(() => true).catch(() => {
-    message('作業内容を端末に保存できませんでした。容量制限やブラウザの設定を確認してください。このまま閉じると未保存の写真が失われます。');
-    return false;
-  });
-  return draftWrites;
-}
-$('title').oninput = () => persistDraft();
-$('source-text').oninput = () => { $('summary-text').value = ''; persistDraft(); render(); };
-$('summary-text').oninput = () => { persistDraft(); render(); };
-document.querySelectorAll('input[name="mode"]').forEach(input => input.onchange = () => { persistDraft(); render(); });
-$('read-text').onclick = async () => {
-  if (busy || !selectedPhotos().length) return;
-  if ($('source-text').value && !confirm('読み取り済みの文字と要約を置き換えますか？')) return;
-  busy = true; render(); message('文字認識を準備しています…');
-  try {
-    const { text, unreadable } = await recognizePhotos(selectedPhotos(), message);
-    if (!text) { message('文字を見つけられませんでした。鮮明な写真に変えるか、文章を入力してください。'); return; }
-    $('source-text').value = text; $('summary-text').value = '';
-    if (await persistDraft()) message((unreadable ? `${unreadable}枚の写真からは文字を読み取れませんでした。必要な内容を確認・追記してください。` : '文字を読み取りました。') + '読み間違いを修正して「無料のAIで要約する」を押してください。');
-  } catch (error) { console.error(error); message('文字を読み取れませんでした。通信・端末の空きメモリを確認して再試行するか、文章を入力してください。'); }
-  finally { busy = false; render(); }
-};
-$('summarize').onclick = async () => {
-  const text = $('source-text').value.trim();
-  if (busy || !text) return;
-  if (text.length > 12000) { message('一度に要約できるのは12,000文字までです。文章を分けてPDFに追記してください。'); return; }
-  busy = true; render(); $('cancel-ai').hidden = false; message('AIを準備しています…初回のモデル取得には時間がかかります。');
-  try {
-    const cancelled = new Promise((_, reject) => { cancelAI = () => { stopAI(); reject(new Error('cancelled')); }; });
-    const summary = await Promise.race([summarizeWithAI(text, message), cancelled]);
-    $('summary-text').value = summary;
-    if (await persistDraft()) message('AIの要約ができました。内容を確認・修正してPDFを作成してください。');
-  } catch (error) {
-    console.error(error);
-    message(error.message === 'cancelled' ? 'AI処理を中止しました。作業内容は残っています。' : 'AIを実行できませんでした。通信や空きメモリを確認してください。端末によっては対応できません。要約欄に文章を入力してPDFを作成することもできます。');
-  } finally { stopAI(); cancelAI = null; busy = false; $('cancel-ai').hidden = true; render(); }
-};
-$('cancel-ai').onclick = () => cancelAI?.();
+window.addEventListener('beforeunload', event => { if (busy) { event.preventDefault(); event.returnValue = ''; } });
 async function initialize() {
-  busy = true; render();
   try {
     const saved = await store('readonly', s => s.getAll());
     documents = saved.filter(d => d.id !== '__draft__').sort((a, b) => b.updated - a.updated);
     const draft = saved.find(d => d.id === '__draft__');
     if (draft) {
-      active = documents.find(d => d.id === draft.activeId) || null;
-      $('title').value = draft.title || '新しいマニュアル';
-      pending = draft.pending.map(p => ({ ...p, url: URL.createObjectURL(new Blob([p.bytes], { type: 'image/jpeg' })) }));
-      $('source-text').value = draft.text?.source || '';
-      $('summary-text').value = draft.text?.summary || '';
-      document.querySelector(`input[value="${draft.text?.mode === 'photos' ? 'photos' : 'summary'}"]`).checked = true;
-      if (pending.length || draft.text?.summary) message('前回の作業内容を復元しました。');
+      active = documents.find(d => d.id === draft.activeId) || null; $('title').value = draft.title || '新しいマニュアル';
+      pending = (draft.pending || []).filter(p => p.selected !== false);
+      source = draft.source || draft.text?.source || ''; summary = draft.summary || draft.text?.summary || ''; paused = draft.paused || false;
     }
-  } catch { message('端末内の保存領域を利用できません。ブラウザの設定を確認してください。'); }
-  busy = false; render();
+    busy = false; render();
+    if (pending.length || source || summary) {
+      if (paused) message('中断した作業があります。「もう一度作成する」で再開できます。');
+      else await runPipeline();
+    }
+  } catch (error) { console.error(error); busy = false; render(); message('端末内の保存領域を利用できません。ブラウザの設定を確認してください。'); }
 }
 initialize();
