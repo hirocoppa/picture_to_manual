@@ -44,3 +44,14 @@ npm run build
 ビルド出力は `dist/` です。相対アセットパスを使うため `/picture_to_manual/` 配下へ配置できます。公開先はGitHub Actionsのデプロイ結果から確認してください。iPhoneのファイル共有にはHTTPSの公開URLを使用してください。
 
 写真をアップロードする通信処理や外部フォントはありません。初回表示時にはホスティング先からアプリ本体を読み込みます。
+
+### Pagesサイトが未初期化の場合
+
+ワークフローの `configure-pages@v5` は `enablement: true` で、未作成のPagesサイトの初期化も試みます。通常の `GITHUB_TOKEN` には初回作成に必要な権限がないため、未初期化のサイトでは以下のいずれかが必要です。
+
+- リポジトリ管理者がSettings → PagesでPagesサイトを有効にする。
+- 対象リポジトリへの **Pages: Read and write** を持つfine-grained PATを、リポジトリのActions Secret **PAGES_ENABLEMENT_TOKEN** に登録する。GitHub Appのトークンを使用する場合は **Administration: write** と **Pages: write** が必要です。トークンの値はソースコードやチャットに記載しないでください。
+
+Secretがあれば初期化処理に使用し、なければ標準の `github.token` を使用します。デプロイには `pages: write` と `id-token: write`、チェックアウトには `contents: read` を設定済みです。サイトを初期化した後は専用Secretを削除して標準トークンへ戻せます。
+
+`Get Pages site failed: Not Found` はサイトが未作成の場合だけでなく、トークンからサイトを参照できない場合も発生し得ます。設定後はActionsの「Deploy GitHub Pages」を再実行し、`Deploy` ステップの公開URLと実際のサイト表示を確認してください。

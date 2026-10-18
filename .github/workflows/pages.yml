@@ -26,7 +26,14 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: npm run build
-      - uses: actions/configure-pages@v5
+      - name: Configure or initialize GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+          # Initial site creation needs a PAT (Pages: write), or a GitHub App
+          # token (Administration: write and Pages: write). GITHUB_TOKEN is
+          # sufficient once the site exists, but cannot initialize a new site.
+          token: ${{ secrets.PAGES_ENABLEMENT_TOKEN || github.token }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
