@@ -89,6 +89,7 @@ test('Japanese summary can be edited, restored, paginated and appended without c
   const second = await saved(page);
   const updated = await PDFDocument.load(Uint8Array.from(second.bytes));
   expect(updated.getPageCount()).toBe(4);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   for (const p of updated.getPages()) { expect(p.getWidth()).toBeCloseTo(595.28); expect(p.getHeight()).toBeCloseTo(841.89); }
   for (const [ref, object] of original.context.enumerateIndirectObjects()) {
     if (typeof object.getContents === 'function') expect(updated.context.lookup(ref).getContents()).toEqual(object.getContents());
@@ -97,7 +98,7 @@ test('Japanese summary can be edited, restored, paginated and appended without c
 
 test('real OCR recognizes photo text without sending images outside the site', async ({ page }) => {
   test.setTimeout(120000);
-  const outside = []; page.on('request', r => { if (!r.url().startsWith('http://127.0.0.1:5173') && !r.url().startsWith('blob:')) outside.push(r.url()); });
+  const outside = []; page.on('request', r => { if (!r.url().startsWith('http://127.0.0.1:5174') && !r.url().startsWith('blob:')) outside.push(r.url()); });
   await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
   const base64 = await page.evaluate(() => {
     const c = document.createElement('canvas'); c.width = 1200; c.height = 600;
@@ -135,5 +136,18 @@ test('AI model download errors preserve editable text', async ({ page }) => {
   await expect(page.locator('#status')).toContainText('AIを実行できませんでした', {timeout:20000});
   await expect(page.locator('#source-text')).toHaveValue('使用後は電源を切ってください。');
   await expect(page.locator('#summary-text')).toHaveValue('');
+  await expect(page.locator('#summarize')).toBeEnabled();
+});
+
+
+test('AI processing can be cancelled while retaining the draft', async ({ page }) => {
+  await page.route('https://huggingface.co/**', () => new Promise(() => {}));
+  await page.goto('/'); await expect(page.locator('#source-text')).toBeEnabled();
+  await page.locator('#source-text').fill('使用後は電源を切ってください。');
+  await page.locator('#summarize').click();
+  await expect(page.locator('#cancel-ai')).toBeVisible();
+  await page.locator('#cancel-ai').click();
+  await expect(page.locator('#status')).toContainText('AI処理を中止しました');
+  await expect(page.locator('#source-text')).toHaveValue('使用後は電源を切ってください。');
   await expect(page.locator('#summarize')).toBeEnabled();
 });
