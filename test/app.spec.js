@@ -21,6 +21,7 @@ async function saved(page) {
 test('select, reorder, restore draft, create PDF, append and retain original pages, download', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#photos')).toBeEnabled();
+  await page.getByRole('radio', { name: '写真をそのままPDF', exact: true }).check();
   const images = await photos(page);
   await page.locator('#title').fill('操作マニュアル');
   await page.locator('#photos').setInputFiles(images.map((base64, i) => ({ name: `${i}.png`, mimeType: 'image/png', buffer: Buffer.from(base64, 'base64') })));
@@ -59,6 +60,7 @@ test('select, reorder, restore draft, create PDF, append and retain original pag
 
 test('invalid image and storage failure show warnings without losing queued photos', async ({ page }) => {
   await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
+  await page.getByRole('radio', { name: '写真をそのままPDF', exact: true }).check();
   await page.locator('#photos').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('invalid') });
   await expect(page.locator('#status')).toContainText('読み込めません');
   const images = await photos(page);
@@ -69,4 +71,69 @@ test('invalid image and storage failure show warnings without losing queued phot
   await expect(page.locator('#status')).toContainText('保存できませんでした');
   await expect(page.locator('.thumbnail')).toHaveCount(1);
   await expect(page.locator('#badge')).toHaveText('新規作成');
+});
+
+
+test('Japanese summary can be edited, restored, paginated and appended without changing existing pages', async ({ page }) => {
+  await page.goto('/'); await expect(page.locator('#source-text')).toBeEnabled();
+  await page.locator('#source-text').fill('使用後は電源を切ってください。');
+  await page.locator('#summary-text').fill('・使用後は必ず電源を切ります。\n・水で洗わないでください。');
+  await page.reload();
+  await expect(page.locator('#summary-text')).toHaveValue(/電源/);
+  await page.locator('#save').click(); await expect(page.locator('#badge')).toHaveText('1ページ保存済み');
+  const first = await saved(page);
+  const original = await PDFDocument.load(Uint8Array.from(first.bytes));
+  expect(original.getPageCount()).toBe(1);
+  await page.locator('#summary-text').fill('追加の注意事項を確認します。\n'.repeat(75));
+  await page.locator('#save').click(); await expect(page.locator('#badge')).toHaveText('4ページ保存済み');
+  const second = await saved(page);
+  const updated = await PDFDocument.load(Uint8Array.from(second.bytes));
+  expect(updated.getPageCount()).toBe(4);
+  for (const p of updated.getPages()) { expect(p.getWidth()).toBeCloseTo(595.28); expect(p.getHeight()).toBeCloseTo(841.89); }
+  for (const [ref, object] of original.context.enumerateIndirectObjects()) {
+    if (typeof object.getContents === 'function') expect(updated.context.lookup(ref).getContents()).toEqual(object.getContents());
+  }
+});
+
+test('real OCR recognizes photo text without sending images outside the site', async ({ page }) => {
+  test.setTimeout(120000);
+  const outside = []; page.on('request', r => { if (!r.url().startsWith('http://127.0.0.1:5173') && !r.url().startsWith('blob:')) outside.push(r.url()); });
+  await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
+  const base64 = await page.evaluate(() => {
+    const c = document.createElement('canvas'); c.width = 1200; c.height = 600;
+    const ctx = c.getContext('2d');ctx.fillStyle = 'white';ctx.fillRect(0,0,1200,600);ctx.fillStyle='black';ctx.font='48px sans-serif';
+    ctx.fillText('Turn off the power after use.', 60, 150); ctx.fillText('Do not wash with water.', 60, 260);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await page.locator('#photos').setInputFiles({ name:'manual.png', mimeType:'image/png', buffer:Buffer.from(base64,'base64') });
+  await expect(page.locator('#read-text')).toBeEnabled();await page.locator('#read-text').click();
+  await expect(page.locator('#source-text')).toHaveValue(/Turn off the power/i, { timeout: 100000 });
+  expect(outside).toEqual([]);
+});
+
+
+test('Japanese photo text is recognized locally', async ({ page }) => {
+  test.setTimeout(120000);
+  await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
+  const base64 = await page.evaluate(async () => {
+    const face = new FontFace('TestJapanese', 'url(/fonts/NotoSansJP-Regular.ttf)'); await face.load(); document.fonts.add(face);
+    const c = document.createElement('canvas'); c.width=1400;c.height=500;
+    const ctx=c.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,1400,500);ctx.fillStyle='black';ctx.font='48px TestJapanese';
+    ctx.fillText('使用後は電源を切ってください。',60,150);ctx.fillText('水で洗わないでください。',60,260);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await page.locator('#photos').setInputFiles({name:'日本語.png',mimeType:'image/png',buffer:Buffer.from(base64,'base64')});
+  await expect(page.locator('#read-text')).toBeEnabled();await page.locator('#read-text').click();
+  await expect(page.locator('#source-text')).toHaveValue(/電\s*源/, {timeout:100000});
+});
+
+test('AI model download errors preserve editable text', async ({ page }) => {
+  await page.route('https://huggingface.co/**', route => route.abort());
+  await page.goto('/');await expect(page.locator('#source-text')).toBeEnabled();
+  await page.locator('#source-text').fill('使用後は電源を切ってください。');
+  await page.locator('#summarize').click();
+  await expect(page.locator('#status')).toContainText('AIを実行できませんでした', {timeout:20000});
+  await expect(page.locator('#source-text')).toHaveValue('使用後は電源を切ってください。');
+  await expect(page.locator('#summary-text')).toHaveValue('');
+  await expect(page.locator('#summarize')).toBeEnabled();
 });

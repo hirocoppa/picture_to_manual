@@ -3,3 +3,5 @@ dist/
 *.log
 playwright-report/
 test-results/
+public/ocr/
+public/ai/
