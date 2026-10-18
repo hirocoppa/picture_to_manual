@@ -4,6 +4,7 @@ import { store } from './storage.js';
 import { recognizePhotos } from './ocr.js';
 import { summarizeWithAI } from './ai.js';
 import { readPhoto } from './image.js';
+import { downloadPdf, pdfFile } from './download.js';
 
 let documents = [], active = null, pending = [], source = '', summary = '';
 let busy = true, paused = false, phase = '', controller, draftWrites = Promise.resolve(), fontPromise;
@@ -23,9 +24,9 @@ app.innerHTML = `
 <div class="actions"><button id="retry" class="secondary" hidden>もう一度作成する</button><button id="cancel" class="secondary" hidden>中止する</button><button id="download" class="primary" hidden>PDFを保存・共有</button></div>
 <div id="preview" hidden><h3>最後にまとめた内容</h3><p id="summary-preview"></p></div>
 <p class="hint">写真・文章は外部に送信しません。要約には誤りや情報の抜けがあり得ます。</p>
-<details><summary>初めて使うとき・文字が読めないとき</summary><p>初回はAIモデル（約512MB）を取得します。Wi-Fiをご利用ください。端末によってはメモリ不足で動作しません。</p><p>縦書きの日本語に対応しています。文字が小さい・ぼけている・斜めの写真は、文字を大きく、明るい場所で正面から撮ると読み取りやすくなります。手書きや複雑な紙面では認識できない場合があります。</p><p>大切なPDFは「ファイル」に保存してください。ブラウザのデータが削除されると端末内の内容も失われます。</p></details>
+<details><summary>初めて使うとき・文字が読めないとき</summary><p>初回はAIモデル（約512MB）を取得します。Wi-Fiをご利用ください。端末によってはメモリ不足で動作しません。</p><p>縦書きの日本語に対応しています。文字が小さい・ぼけている・斜めの写真は、文字を大きく、明るい場所で正面から撮ると読み取りやすくなります。手書きや複雑な紙面では認識できない場合があります。</p><p>完成時に自動ダウンロードを開始します。iPhoneの設定によっては保存操作が必要です。保存されない場合は「PDFを保存・共有」から「ファイルに保存」を選んでください。アプリ内には最新のPDFだけを残します。</p></details>
 </section>
-<section class="library"><div class="section-heading"><h2>保存したPDF</h2><button id="new" class="secondary">新しいPDF</button></div><div id="documents"></div></section>
+<section class="library"><div class="section-heading"><h2>最新のPDF</h2><button id="new" class="secondary">新しいPDF</button></div><div id="documents"></div></section>
 <footer>Picture to Manual</footer>
 </main>`;
 const $ = id => document.getElementById(id);
@@ -52,7 +53,7 @@ function render() {
   $('preview').hidden = !active?.lastSummary;
   $('summary-preview').textContent = active?.lastSummary || '';
   $('documents').replaceChildren();
-  if (!documents.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = '作成したPDFがここに並びます。'; $('documents').append(p); }
+  if (!documents.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = '作成後は最新のPDFだけを残します。'; $('documents').append(p); }
   for (const doc of documents) {
     const button = document.createElement('button'); button.className = 'document' + (active?.id === doc.id ? ' selected' : ''); button.disabled = busy;
     const name = document.createElement('strong'); name.textContent = doc.title;
@@ -105,11 +106,17 @@ async function runPipeline() {
     setPhase('saving', 'PDFを端末に保存しています…');
     await draftWrites;
     await store('readwrite', s => {
+      s.clear();
       s.put(doc);
       return s.put({ id: '__draft__', version: 2, activeId: doc.id, title, pending: [], source: '', summary: '', paused: false });
     });
-    active = doc; documents = [doc, ...documents.filter(d => d.id !== doc.id)]; pending = []; source = summary = ''; $('title').value = title;
-    message(`完成しました。${doc.count}ページのPDFを保存・共有できます。`);
+    active = doc; documents = [doc]; pending = []; source = summary = ''; $('title').value = title;
+    try {
+      const filename = downloadPdf(doc);
+      message(`完成しました。${filename} の自動ダウンロードを開始しました。保存されない場合は「PDFを保存・共有」を押してください。`);
+    } catch {
+      message('PDFが完成しました。自動ダウンロードを開始できなかったため、「PDFを保存・共有」を押してください。');
+    }
   } catch (error) {
     console.error(error); paused = true;
     const text = error.name === 'AbortError' ? '処理を中止しました。「もう一度作成する」で再開できます。'
@@ -138,22 +145,31 @@ $('new').onclick = () => select(null);
 $('title').oninput = () => saveDraft().catch(() => message('名前を保存できませんでした。端末の空き容量を確認してください。'));
 $('download').onclick = async () => {
   if (!active || busy) return;
-  const file = new File([active.bytes], active.title.replace(/[\\/:*?"<>|]/g, '_') + '.pdf', { type: 'application/pdf' });
+  const file = pdfFile(active);
   try {
     if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file], title: active.title });
-    else { const url = URL.createObjectURL(file); const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+    else downloadPdf(active);
   } catch (error) { if (error.name !== 'AbortError') message('共有できませんでした。もう一度お試しください。'); }
 };
 window.addEventListener('beforeunload', event => { if (busy) { event.preventDefault(); event.returnValue = ''; } });
 async function initialize() {
   try {
     const saved = await store('readonly', s => s.getAll());
-    documents = saved.filter(d => d.id !== '__draft__').sort((a, b) => b.updated - a.updated);
+    const previous = saved.filter(d => d.id !== '__draft__').sort((a, b) => b.updated - a.updated);
+    documents = previous.slice(0, 1);
+    if (previous.length > 1) await store('readwrite', s => {
+      for (const doc of previous.slice(1)) s.delete(doc.id);
+      return s.get(documents[0].id);
+    });
     const draft = saved.find(d => d.id === '__draft__');
     if (draft) {
       active = documents.find(d => d.id === draft.activeId) || null; $('title').value = draft.title || '新しいマニュアル';
       pending = (draft.pending || []).filter(p => p.selected !== false);
       source = draft.source || draft.text?.source || ''; summary = draft.summary || draft.text?.summary || ''; paused = draft.paused || false;
+    }
+    if (!active && !(pending.length || source || summary)) {
+      active = documents[0] || null;
+      if (active) $('title').value = active.title;
     }
     busy = false; render();
     if (pending.length || source || summary) {
