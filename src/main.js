@@ -17,8 +17,9 @@ app.innerHTML = `
 <div class="section-heading"><h2 id="editor-heading">新しいPDF</h2><span id="badge">新規作成</span></div>
 <label for="title">PDFの名前</label><input id="title" maxlength="100" value="新しいマニュアル" placeholder="例：読書メモ">
 <p id="existing"></p>
-<label class="drop" id="photo-picker" for="photos" tabindex="0" role="button"><span class="photo-icon">＋</span><strong id="picker-label">写真を選んでPDFを作る</strong><span>複数の写真をまとめて選べます</span></label>
+<label class="drop" id="photo-picker" for="photos" tabindex="0" role="button"><span class="photo-icon">＋</span><strong id="picker-label">保存済みの写真を選ぶ</strong><span>撮影済みの写真を複数選べます</span></label>
 <input type="file" id="photos" accept="image/*" multiple hidden>
+<p class="hint">選択メニューでは「写真ライブラリ」を選んでください。</p>
 <div id="progress" hidden><ol><li data-phase="ocr">文字を読み取り</li><li data-phase="ai">AIで要約</li><li data-phase="pdf">PDFを作成</li></ol></div>
 <p id="status" role="status" aria-live="polite"></p>
 <div class="actions"><button id="retry" class="secondary" hidden>もう一度作成する</button><button id="cancel" class="secondary" hidden>中止する</button><button id="download" class="primary" hidden>PDFを保存・共有</button></div>
@@ -36,7 +37,7 @@ function render() {
   $('photo-picker').classList.toggle('disabled', busy);
   $('photo-picker').setAttribute('aria-disabled', String(busy));
   $('photo-picker').tabIndex = busy ? -1 : 0;
-  $('picker-label').textContent = paused && pending.length ? '写真を選び直す' : active ? '写真を追加してPDFを更新' : '写真を選んでPDFを作る';
+  $('picker-label').textContent = paused && pending.length ? '保存済みの写真を選び直す' : active ? '保存済みの写真を追加' : '保存済みの写真を選ぶ';
   $('badge').textContent = active ? `${active.count}ページ保存済み` : '新規作成';
   $('existing').textContent = active ? `今の${active.count}ページを残して、新しい要約を末尾に追加します。` : '';
   $('editor-heading').textContent = active ? 'PDFに追加' : '新しいPDF';
