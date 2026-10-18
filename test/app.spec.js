@@ -14,7 +14,9 @@ test('vertical photos automatically become a summary PDF and append without alte
   await page.locator('#title').fill('縦書きの要約');
   const input = await photo(page);
   const automatic = page.waitForEvent('download');
-  await page.locator('#photos').setInputFiles(input);
+  const chooserPromise = page.waitForEvent('filechooser');
+  await page.getByRole('button', {name:'写真ライブラリ',exact:true}).click();
+  await (await chooserPromise).setFiles(input);
   await expect(page.locator('#badge')).toHaveText('1ページ保存済み', {timeout:100000});
   await expect(page.locator('#summary-preview')).toContainText('電源');
   const first = (await saved(page)).find(d => d.bytes);
@@ -54,10 +56,13 @@ test('real vertical OCR preserves Japanese words and column reading order; faile
   await expect(page.locator('#retry')).toBeVisible();
 });
 
-test('horizontal Japanese photos also proceed automatically', async ({ page }) => {
+test('horizontal Japanese image files also proceed automatically', async ({ page }) => {
   test.setTimeout(120000); await mockAI(page);
   await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
-  await page.locator('#photos').setInputFiles(await photo(page, {vertical:false,dark:true}));
+  const image = await photo(page, {vertical:false,dark:true});
+  const chooserPromise = page.waitForEvent('filechooser');
+  await page.getByRole('button', {name:'ファイルを選択',exact:true}).click();
+  await (await chooserPromise).setFiles(image);
   await expect(page.locator('#badge')).toHaveText('1ページ保存済み', {timeout:100000});
 });
 

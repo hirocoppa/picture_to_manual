@@ -17,9 +17,10 @@ app.innerHTML = `
 <div class="section-heading"><h2 id="editor-heading">新しいPDF</h2><span id="badge">新規作成</span></div>
 <label for="title">PDFの名前</label><input id="title" maxlength="100" value="新しいマニュアル" placeholder="例：読書メモ">
 <p id="existing"></p>
-<label class="drop" id="photo-picker" for="photos" tabindex="0" role="button"><span class="photo-icon">＋</span><strong id="picker-label">保存済みの写真を選ぶ</strong><span>撮影済みの写真を複数選べます</span></label>
+<div class="import-options"><button id="photo-picker" class="primary">写真ライブラリ</button><button id="file-picker" class="secondary">ファイルを選択</button></div>
 <input type="file" id="photos" accept="image/*" multiple hidden>
-<p class="hint">選択メニューでは「写真ライブラリ」を選んでください。</p>
+<input type="file" id="files" multiple hidden>
+<p class="hint">撮影済みの写真・画像ファイルを複数選べます。</p>
 <div id="progress" hidden><ol><li data-phase="ocr">文字を読み取り</li><li data-phase="ai">AIで要約</li><li data-phase="pdf">PDFを作成</li></ol></div>
 <p id="status" role="status" aria-live="polite"></p>
 <div class="actions"><button id="retry" class="secondary" hidden>もう一度作成する</button><button id="cancel" class="secondary" hidden>中止する</button><button id="download" class="primary" hidden>PDFを保存・共有</button></div>
@@ -34,10 +35,7 @@ const $ = id => document.getElementById(id);
 function message(text) { $('status').textContent = text; }
 function render() {
   $('title').disabled = busy; $('photos').disabled = busy; $('new').disabled = busy;
-  $('photo-picker').classList.toggle('disabled', busy);
-  $('photo-picker').setAttribute('aria-disabled', String(busy));
-  $('photo-picker').tabIndex = busy ? -1 : 0;
-  $('picker-label').textContent = paused && pending.length ? '保存済みの写真を選び直す' : active ? '保存済みの写真を追加' : '保存済みの写真を選ぶ';
+  $('files').disabled = busy; $('photo-picker').disabled = busy; $('file-picker').disabled = busy;
   $('badge').textContent = active ? `${active.count}ページ保存済み` : '新規作成';
   $('existing').textContent = active ? `今の${active.count}ページを残して、新しい要約を末尾に追加します。` : '';
   $('editor-heading').textContent = active ? 'PDFに追加' : '新しいPDF';
@@ -127,7 +125,7 @@ async function runPipeline() {
     message(text);
   } finally { busy = false; controller = null; phase = ''; render(); }
 }
-$('photos').onchange = async event => {
+async function importFiles(event) {
   const files = [...event.target.files]; event.target.value = ''; if (!files.length || busy) return;
   busy = true; message('写真を読み込んでいます…'); render();
   try {
@@ -138,8 +136,11 @@ $('photos').onchange = async event => {
   } catch (error) {
     paused = true; busy = false; message(error.name === 'QuotaExceededError' ? '写真を保存できませんでした。端末の空き容量を確認してください。' : '写真を読み込めませんでした。40MB以下のJPEG・PNGなどを選んでください。'); render();
   }
-};
-$('photo-picker').onkeydown = event => { if (!busy && ['Enter', ' '].includes(event.key)) { event.preventDefault(); $('photos').click(); } };
+}
+$('photos').onchange = importFiles;
+$('files').onchange = importFiles;
+$('photo-picker').onclick = () => { if (!busy) $('photos').click(); };
+$('file-picker').onclick = () => { if (!busy) $('files').click(); };
 $('cancel').onclick = () => { if (phase !== 'saving') controller?.abort(); };
 $('retry').onclick = runPipeline;
 $('new').onclick = () => select(null);
