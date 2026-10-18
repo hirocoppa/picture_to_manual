@@ -52,7 +52,7 @@ test('real vertical OCR preserves Japanese words and column reading order; faile
   expect(draft.source).toMatch(/タンク/);
   expect(draft.source.indexOf('電源')).toBeLessThan(draft.source.indexOf('水で洗わない'));
   expect(draft.source.indexOf('水で洗わない')).toBeLessThan(draft.source.indexOf('タンク'));
-  expect(draft.pending).toHaveLength(1);
+  expect(draft.pending).toHaveLength(0);
   await expect(page.locator('#retry')).toBeVisible();
 });
 
@@ -78,15 +78,19 @@ test('blank photos stop before AI; selecting a replacement recovers', async ({ p
   await expect(page.locator('#badge')).toHaveText('1ページ保存済み', {timeout:100000});
 });
 
-test('interrupted automatic work restores and resumes without OCR confirmation', async ({ page }) => {
+test('interrupted AI work restores paused and resumes only on request', async ({ page }) => {
   test.setTimeout(120000);
   await mockAI(page);
   await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
   await page.evaluate(async () => {
     const db = await new Promise(res => {const r=indexedDB.open('picture-to-manual',1);r.onsuccess=()=>res(r.result);});
-    await new Promise(res => { const tx=db.transaction('documents','readwrite');tx.objectStore('documents').put({id:'__draft__',title:'復元',source:'使用後は電源を切ります。',pending:[],summary:'',paused:false});tx.oncomplete=res; });db.close();
+    await new Promise(res => { const tx=db.transaction('documents','readwrite');tx.objectStore('documents').put({id:'__draft__',version:3,phase:'ai',title:'復元',source:'使用後は電源を切ります。',pending:[],summary:'',paused:false});tx.oncomplete=res; });db.close();
   });
   await page.reload();
+  await expect(page.locator('#status')).toContainText('自動再実行を止めました');
+  await expect(page.locator('#badge')).toHaveText('新規作成');
+  expect((await saved(page)).find(d=>d.id==='__draft__').paused).toBe(true);
+  await page.locator('#retry').click();
   await expect(page.locator('#badge')).toHaveText('1ページ保存済み', {timeout:30000});
 });
 
@@ -182,4 +186,31 @@ test.describe('local calendar filenames',()=>{
     await page.clock.setFixedTime(new Date('2026-10-18T15:30:00Z'));
     const manual=page.waitForEvent('download');await page.locator('#download').click();expect((await manual).suggestedFilename()).toBe('読書メモ_20261018.pdf');
   });
+});
+
+test('reloading a stuck AI worker does not start it again and releases stored photos', async ({ page }) => {
+  test.setTimeout(120000); let workers = 0;
+  await page.route('**/assets/ai-worker-*.js', r => { workers++; return r.fulfill({contentType:'application/javascript',body:'self.onmessage=()=>{};'}); });
+  await page.goto('/'); await expect(page.locator('#photos')).toBeEnabled();
+  await page.locator('#photos').setInputFiles(await photo(page));
+  await expect.poll(()=>workers,{timeout:100000}).toBe(1);
+  const draft=(await saved(page)).find(d=>d.id==='__draft__');
+  expect(draft.phase).toBe('ai');expect(draft.pending).toHaveLength(0);expect(draft.source).toContain('電源');
+  page.on('dialog', dialog=>dialog.accept());await page.reload();
+  await expect(page.locator('#status')).toContainText('自動再実行を止めました');
+  expect(workers).toBe(1);expect((await saved(page)).find(d=>d.id==='__draft__').source).toContain('電源');
+  await expect(page.locator('#retry')).toBeVisible();
+});
+
+test('an unresponsive AI worker times out with the source preserved', async ({ page }) => {
+  test.setTimeout(120000);let workers=0;
+  await page.clock.install();
+  await page.route('**/assets/ai-worker-*.js', r=>{workers++;return r.fulfill({contentType:'application/javascript',body:'self.onmessage=()=>{};'});});
+  await page.goto('/');await expect(page.locator('#photos')).toBeEnabled();
+  await page.locator('#photos').setInputFiles(await photo(page));
+  await expect.poll(()=>workers,{timeout:100000}).toBe(1);
+  await page.clock.fastForward(91000);
+  await expect(page.locator('#status')).toContainText('AIからの応答が止まった');
+  await expect(page.locator('#retry')).toBeVisible();
+  const draft=(await saved(page)).find(d=>d.id==='__draft__');expect(draft.source).toContain('電源');expect(draft.paused).toBe(true);
 });

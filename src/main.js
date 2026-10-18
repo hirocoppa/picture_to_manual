@@ -26,7 +26,7 @@ app.innerHTML = `
 <div class="actions"><button id="retry" class="secondary" hidden>もう一度作成する</button><button id="cancel" class="secondary" hidden>中止する</button><button id="download" class="primary" hidden>PDFを保存・共有</button></div>
 <div id="preview" hidden><h3>最後にまとめた内容</h3><p id="summary-preview"></p></div>
 <p class="hint">写真・文章は外部に送信しません。要約には誤りや情報の抜けがあり得ます。</p>
-<details><summary>初めて使うとき・文字が読めないとき</summary><p>初回はAIモデル（約512MB）を取得します。Wi-Fiをご利用ください。端末によってはメモリ不足で動作しません。</p><p>縦書きの日本語に対応しています。文字が小さい・ぼけている・斜めの写真は、文字を大きく、明るい場所で正面から撮ると読み取りやすくなります。手書きや複雑な紙面では認識できない場合があります。</p><p>完成時に自動ダウンロードを開始します。iPhoneの設定によっては保存操作が必要です。保存されない場合は「PDFを保存・共有」から「ファイルに保存」を選んでください。アプリ内には最新のPDFだけを残します。</p></details>
+<details><summary>初めて使うとき・文字が読めないとき</summary><p>初回は小型AIモデル（約118MB）を取得します。Wi-Fiをご利用ください。文章の意味をもとに重要文を抽出します。端末によってはメモリ不足で動作しない場合があります。</p><p>縦書きの日本語に対応しています。文字が小さい・ぼけている・斜めの写真は、文字を大きく、明るい場所で正面から撮ると読み取りやすくなります。手書きや複雑な紙面では認識できない場合があります。</p><p>完成時に自動ダウンロードを開始します。iPhoneの設定によっては保存操作が必要です。保存されない場合は「PDFを保存・共有」から「ファイルに保存」を選んでください。アプリ内には最新のPDFだけを残します。</p></details>
 </section>
 <section class="library"><div class="section-heading"><h2>最新のPDF</h2><button id="new" class="secondary">新しいPDF</button></div><div id="documents"></div></section>
 <footer>Picture to Manual</footer>
@@ -61,7 +61,7 @@ function render() {
   }
 }
 function saveDraft() {
-  const draft = { id: '__draft__', version: 2, activeId: active?.id || null, title: $('title').value, pending, source, summary, paused };
+  const draft = { id: '__draft__', version: 3, activeId: active?.id || null, title: $('title').value, pending, source, summary, paused, phase };
   draftWrites = draftWrites.catch(() => {}).then(() => store('readwrite', s => s.put(draft)));
   return draftWrites;
 }
@@ -85,20 +85,23 @@ async function runPipeline() {
     await saveDraft(); signal.throwIfAborted();
     if (!source && !summary) {
       setPhase('ocr', '文字の読み取りを準備しています…');
+      await saveDraft(); signal.throwIfAborted();
       const result = await recognizePhotos(pending, message, signal); signal.throwIfAborted();
       if (result.unreadable.length || !result.text) {
         const list = result.unreadable.length ? result.unreadable.join('・') : 'すべて';
         throw new Error(`写真${list}の文字を十分に読み取れませんでした。明るい場所で文字を大きく、正面から撮った写真を選び直してください。PDFは変更していません。`);
       }
-      source = result.text; await saveDraft(); signal.throwIfAborted();
+      source = result.text; pending = []; await saveDraft(); signal.throwIfAborted();
     }
     if (!summary) {
-      setPhase('ai', 'AIで要約しています。初回のモデル取得には時間がかかります…');
+      setPhase('ai', '小型AIで要点を整理しています。初回のモデル取得には時間がかかります…');
+      await saveDraft(); signal.throwIfAborted();
       summary = await summarizeWithAI(source, message, signal); signal.throwIfAborted();
       if (!summary.trim()) throw new Error('要約を作成できませんでした。もう一度お試しください。');
       await saveDraft(); signal.throwIfAborted();
     }
     setPhase('pdf', '要約したPDFを作成しています…');
+    await saveDraft(); signal.throwIfAborted();
     const title = $('title').value.trim() || '新しいマニュアル';
     const result = await appendSummary(active?.bytes, { title, summary }, await japaneseFont(signal)); signal.throwIfAborted();
     const doc = { id: active?.id || crypto.randomUUID(), title, bytes: result.bytes, count: result.count, lastSummary: summary, updated: Date.now() };
@@ -107,7 +110,7 @@ async function runPipeline() {
     await store('readwrite', s => {
       s.clear();
       s.put(doc);
-      return s.put({ id: '__draft__', version: 2, activeId: doc.id, title, pending: [], source: '', summary: '', paused: false });
+      return s.put({ id: '__draft__', version: 3, activeId: doc.id, title, pending: [], source: '', summary: '', paused: false, phase: '' });
     });
     active = doc; documents = [doc]; pending = []; source = summary = ''; $('title').value = title;
     try {
@@ -132,7 +135,7 @@ async function importFiles(event) {
     const imported = [];
     for (const file of files) imported.push(await readPhoto(file));
     pending = imported; source = summary = ''; paused = false;
-    await saveDraft(); busy = false; await runPipeline();
+    await saveDraft(); busy = false; void runPipeline();
   } catch (error) {
     paused = true; busy = false; message(error.name === 'QuotaExceededError' ? '写真を保存できませんでした。端末の空き容量を確認してください。' : '写真を読み込めませんでした。40MB以下のJPEG・PNGなどを選んでください。'); render();
   }
@@ -167,7 +170,11 @@ async function initialize() {
     if (draft) {
       active = documents.find(d => d.id === draft.activeId) || null; $('title').value = draft.title || '新しいマニュアル';
       pending = (draft.pending || []).filter(p => p.selected !== false);
-      source = draft.source || draft.text?.source || ''; summary = draft.summary || draft.text?.summary || ''; paused = draft.paused || false;
+      source = draft.source || draft.text?.source || ''; summary = draft.summary || draft.text?.summary || '';
+      const interrupted = Boolean(draft.phase) || ((draft.version || 0) < 3 && source && !summary);
+      paused = Boolean(draft.paused || interrupted);
+      if (source) pending = [];
+      if (interrupted) await saveDraft();
     }
     if (!active && !(pending.length || source || summary)) {
       active = documents[0] || null;
@@ -175,8 +182,8 @@ async function initialize() {
     }
     busy = false; render();
     if (pending.length || source || summary) {
-      if (paused) message('中断した作業があります。「もう一度作成する」で再開できます。');
-      else await runPipeline();
+      if (paused) message('前回の処理が中断しています。落ち続けるのを防ぐため自動再実行を止めました。「もう一度作成する」で保存済みの文章から再開できます。');
+      else void runPipeline();
     }
   } catch (error) { console.error(error); busy = false; render(); message('端末内の保存領域を利用できません。ブラウザの設定を確認してください。'); }
 }
