@@ -15,6 +15,6 @@ export async function recognizePhotos(photos, onProgress) {
       const { data } = await worker.recognize(new Blob([photos[index].bytes], { type: 'image/jpeg' }));
       results.push(data.text.trim());
     }
-    return results.filter(Boolean).join('\n\n');
+    return { text: results.filter(Boolean).join('\n\n'), unreadable: results.filter(text => !text).length };
   } finally { if (worker) await worker.terminate(); }
 }

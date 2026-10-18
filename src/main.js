@@ -144,10 +144,10 @@ $('read-text').onclick = async () => {
   if ($('source-text').value && !confirm('読み取り済みの文字と要約を置き換えますか？')) return;
   busy = true; render(); message('文字認識を準備しています…');
   try {
-    const text = await recognizePhotos(selectedPhotos(), message);
+    const { text, unreadable } = await recognizePhotos(selectedPhotos(), message);
     if (!text) { message('文字を見つけられませんでした。鮮明な写真に変えるか、文章を入力してください。'); return; }
     $('source-text').value = text; $('summary-text').value = '';
-    if (await persistDraft()) message('文字を読み取りました。読み間違いを修正して「無料のAIで要約する」を押してください。');
+    if (await persistDraft()) message((unreadable ? `${unreadable}枚の写真からは文字を読み取れませんでした。必要な内容を確認・追記してください。` : '文字を読み取りました。') + '読み間違いを修正して「無料のAIで要約する」を押してください。');
   } catch (error) { console.error(error); message('文字を読み取れませんでした。通信・端末の空きメモリを確認して再試行するか、文章を入力してください。'); }
   finally { busy = false; render(); }
 };

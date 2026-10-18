@@ -106,9 +106,13 @@ test('real OCR recognizes photo text without sending images outside the site', a
     ctx.fillText('Turn off the power after use.', 60, 150); ctx.fillText('Do not wash with water.', 60, 260);
     return c.toDataURL('image/png').split(',')[1];
   });
-  await page.locator('#photos').setInputFiles({ name:'manual.png', mimeType:'image/png', buffer:Buffer.from(base64,'base64') });
+  const blank = await page.evaluate(() => {
+    const c=document.createElement('canvas');c.width=400;c.height=400;const ctx=c.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,400,400);return c.toDataURL('image/png').split(',')[1];
+  });
+  await page.locator('#photos').setInputFiles([{ name:'manual.png', mimeType:'image/png', buffer:Buffer.from(base64,'base64') }, {name:'blank.png',mimeType:'image/png',buffer:Buffer.from(blank,'base64')}]);
   await expect(page.locator('#read-text')).toBeEnabled();await page.locator('#read-text').click();
   await expect(page.locator('#source-text')).toHaveValue(/Turn off the power/i, { timeout: 100000 });
+  await expect(page.locator('#status')).toContainText('1枚の写真からは文字を読み取れませんでした');
   expect(outside).toEqual([]);
 });
 
